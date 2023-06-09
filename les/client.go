@@ -18,6 +18,7 @@
 package les
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -42,6 +43,7 @@ import (
 	vfc "github.com/ethereum/go-ethereum/les/vflux/client"
 	"github.com/ethereum/go-ethereum/light"
 	"github.com/ethereum/go-ethereum/log"
+	"github.com/ethereum/go-ethereum/mamoru/mempool"
 	"github.com/ethereum/go-ethereum/node"
 	"github.com/ethereum/go-ethereum/p2p"
 	"github.com/ethereum/go-ethereum/p2p/enode"
@@ -151,7 +153,10 @@ func New(stack *node.Node, config *ethconfig.Config) (*LightEthereum, error) {
 	}
 	leth.chainReader = leth.blockchain
 	leth.txPool = light.NewTxPool(leth.chainConfig, leth.blockchain, leth.relay)
-
+	////////////////////////////////////////////////////////
+	// Attach LightTxpool sniffer
+	mempool.NewLightSniffer(context.Background(), leth.txPool, leth.blockchain, chainConfig)
+	////////////////////////////////////////////////////////
 	// Set up checkpoint oracle.
 	leth.oracle = leth.setupOracle(stack, genesisHash, config)
 
@@ -182,6 +187,10 @@ func New(stack *node.Node, config *ethconfig.Config) (*LightEthereum, error) {
 		log.Warn("Ultra light client is enabled", "trustedNodes", len(leth.handler.ulc.keys), "minTrustedFraction", leth.handler.ulc.fraction)
 		leth.blockchain.DisableCheckFreq()
 	}
+	////////////////////////////////////////////////////////
+	// Attach Downloader to sniffer
+	leth.blockchain.Sniffer.SetDownloader(leth.handler.downloader)
+	////////////////////////////////////////////////////////
 
 	leth.netRPCService = ethapi.NewPublicNetAPI(leth.p2pServer, leth.config.NetworkId)
 

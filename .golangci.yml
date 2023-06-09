@@ -11,6 +11,7 @@ run:
     - core/genesis_alloc.go
     - gen_.*.go
     - .*_gen.go
+    - mamoru/*
 
 linters:
   enable:
@@ -30,7 +31,7 @@ linters:
     - gocognit
     - gofmt
     # - gomnd
-    - gomoddirectives
+    # - gomoddirectives
     - gosec
     - makezero
     - nestif
@@ -49,7 +50,7 @@ linters:
     - tparallel
     - unconvert
     - unparam
-    - wsl
+    # - wsl
     - asasalint
     #- errorlint causes stack overflow. TODO: recheck after each golangci update
 

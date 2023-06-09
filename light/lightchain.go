@@ -38,6 +38,8 @@ import (
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/event"
 	"github.com/ethereum/go-ethereum/log"
+	"github.com/ethereum/go-ethereum/mamoru"
+	"github.com/ethereum/go-ethereum/mamoru/call_tracer"
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/ethereum/go-ethereum/rlp"
 )
@@ -78,6 +80,8 @@ type LightChain struct {
 
 	// Bor
 	chain2HeadFeed event.Feed
+
+	Sniffer *mamoru.Sniffer // Sniffer for Mamoru
 }
 
 // NewLightChain returns a fully initialised light chain using information
@@ -97,6 +101,8 @@ func NewLightChain(odr OdrBackend, config *params.ChainConfig, engine consensus.
 		bodyRLPCache:  bodyRLPCache,
 		blockCache:    blockCache,
 		engine:        engine,
+
+		Sniffer: mamoru.NewSniffer(), // Sniffer for Mamoru
 	}
 	bc.forker = core.NewForkChoice(bc, nil, checker)
 	var err error
@@ -459,6 +465,50 @@ func (lc *LightChain) InsertHeaderChain(chain []*types.Header, checkFreq int) (i
 	case core.SideStatTy:
 		lc.chainSideFeed.Send(core.ChainSideEvent{Block: block})
 	}
+	//////////////////////////////////////////////////////////////////
+	if !lc.Sniffer.CheckRequirements() {
+		return 0, nil
+	}
+
+	ctx := context.Background()
+
+	lastBlock, err := lc.GetBlockByNumber(ctx, block.NumberU64())
+	if err != nil {
+		return 0, err
+	}
+
+	parentBlock, err := lc.GetBlockByHash(ctx, block.ParentHash())
+	if err != nil {
+		return 0, err
+	}
+
+	stateDb := NewState(ctx, parentBlock.Header(), lc.Odr())
+	receipts, err := GetBlockReceipts(ctx, lc.Odr(), lastBlock.Hash(), lastBlock.Number().Uint64())
+	if err != nil {
+		return 0, err
+	}
+
+	startTime := time.Now()
+	log.Info("Mamoru Eth Sniffer start", "number", block.NumberU64(), "ctx", mamoru.CtxLightchain)
+
+	tracer := mamoru.NewTracer(mamoru.NewFeed(lc.Config()))
+	tracer.FeedBlock(block)
+	tracer.FeedTransactions(block.Number(), block.Transactions(), receipts)
+	tracer.FeedEvents(receipts)
+
+	//Launch EVM and Collect Call Trace data
+	txTrace, err := call_tracer.TraceBlock(ctx, call_tracer.NewTracerConfig(stateDb.Copy(), lc.Config(), lc), lastBlock)
+	if err != nil {
+		log.Error("Mamoru Eth Sniffer Error", "err", err, "ctx", mamoru.CtxLightchain)
+		return 0, err
+	}
+	for _, call := range txTrace {
+		callFrames := call.Result
+		tracer.FeedCallTraces(callFrames, block.NumberU64())
+	}
+
+	tracer.Send(startTime, block.Number(), block.Hash(), mamoru.CtxLightchain)
+	//////////////////////////////////////////////////////////////////
 	return 0, err
 }
 

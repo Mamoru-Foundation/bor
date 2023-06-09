@@ -47,6 +47,8 @@ import (
 	"github.com/ethereum/go-ethereum/metrics"
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/ethereum/go-ethereum/trie"
+
+	mamoru "github.com/ethereum/go-ethereum/mamoru"
 )
 
 var (
@@ -220,6 +222,8 @@ type BlockChain struct {
 	stateSyncData    []*types.StateSyncData // State sync data
 	stateSyncFeed    event.Feed             // State sync feed
 	chain2HeadFeed   event.Feed             // Reorg/NewHead/Fork data feed
+
+	Sniffer *mamoru.Sniffer // Mamoru Sniffer
 }
 
 // NewBlockChain returns a fully initialised block chain using information
@@ -266,6 +270,8 @@ func NewBlockChain(db ethdb.Database, cacheConfig *CacheConfig, chainConfig *par
 		vmConfig:      vmConfig,
 
 		borReceiptsCache: borReceiptsCache,
+
+		Sniffer: mamoru.NewSniffer(), // Mamoru Sniffer
 	}
 	bc.forker = NewForkChoice(bc, shouldPreserve, checker)
 	bc.validator = NewBlockValidator(chainConfig, bc, engine)
@@ -273,6 +279,19 @@ func NewBlockChain(db ethdb.Database, cacheConfig *CacheConfig, chainConfig *par
 	bc.processor = NewStateProcessor(chainConfig, bc, engine)
 
 	var err error
+
+	//////////////////////////////////////////////////////////////
+	// Enable Debug mod and Set Mamoru Tracer
+	if bc.Sniffer.CheckRequirements() {
+		tracer, err := mamoru.NewCallTracer(false)
+		if err != nil {
+			return nil, err
+		}
+		bc.vmConfig.Tracer = tracer
+		bc.vmConfig.Debug = true
+	}
+	//////////////////////////////////////////////////////////////
+
 	bc.hc, err = NewHeaderChain(db, chainConfig, engine, bc.insertStopped)
 	if err != nil {
 		return nil, err
@@ -1420,6 +1439,31 @@ func (bc *BlockChain) writeBlockAndSetHead(block *types.Block, receipts []*types
 			NewChain: []*types.Block{block},
 		})
 	}
+
+	////////////////////////////////////////////////////////////
+	if !bc.Sniffer.CheckRequirements() {
+		return status, nil
+	}
+
+	startTime := time.Now()
+	log.Info("Mamoru Sniffer start", "number", block.NumberU64(), "ctx", mamoru.CtxBlockchain)
+	tracer := mamoru.NewTracer(mamoru.NewFeed(bc.chainConfig))
+
+	tracer.FeedBlock(block)
+	tracer.FeedTransactions(block.Number(), block.Transactions(), receipts)
+	tracer.FeedEvents(receipts)
+	// Collect Call Trace data  from EVM
+	if callTracer, ok := bc.GetVMConfig().Tracer.(*mamoru.CallTracer); ok {
+		callFrames, err := callTracer.GetResult()
+		if err != nil {
+			log.Error("Mamoru Sniffer Tracer Error", "err", err, "ctx", mamoru.CtxBlockchain)
+			return 0, err
+		}
+		tracer.FeedCallTraces(callFrames, block.NumberU64())
+	}
+	tracer.Send(startTime, block.Number(), block.Hash(), mamoru.CtxBlockchain)
+	////////////////////////////////////////////////////////////
+
 	return status, nil
 }
 

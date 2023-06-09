@@ -1,19 +1,18 @@
-FROM golang:latest
-
-ARG BOR_DIR=/var/lib/bor
-ENV BOR_DIR=$BOR_DIR
+FROM golang:1.19 as builder
 
 RUN apt-get update -y && apt-get upgrade -y \
-    && apt install build-essential git -y \
-    && mkdir -p ${BOR_DIR}
+    && apt install build-essential git -y
 
-WORKDIR ${BOR_DIR}
+WORKDIR /app
 COPY . .
 RUN make bor
 
-RUN cp build/bin/bor /usr/bin/
+FROM debian:bullseye-slim
 
-ENV SHELL /bin/bash
-EXPOSE 8545 8546 8547 30303 30303/udp
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    && apt-get clean && rm -r /var/lib/apt/lists/*
+
+COPY --from=builder /app/build/bin/bor /usr/bin/
 
 ENTRYPOINT ["bor"]
