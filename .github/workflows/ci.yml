@@ -2,14 +2,7 @@ name: CI
 on:
   push:
     branches:
-      - "master"
-      - "qa"
-      - "develop"
       - "mamoru"
-  pull_request:
-    branches:
-      - "**"
-    types: [opened, synchronize]
 
 concurrency:
   group: ${{ github.ref_name }}
@@ -17,7 +10,6 @@ concurrency:
 
 jobs:
   tests:
-    if: (github.event.action != 'closed' || github.event.pull_request.merged == true)
     strategy:
       matrix:
         os: [ ubuntu-20.04 ] # list of os: https://github.com/actions/virtual-environments
@@ -25,7 +17,6 @@ jobs:
     steps:
         - uses: actions/checkout@v3
         - run: |
-            git submodule update --init --recursive --force
             git fetch --no-tags --prune --depth=1 origin +refs/heads/master:refs/remotes/origin/master
 
         - uses: actions/setup-go@v3
@@ -73,3 +64,34 @@ jobs:
         #       if ! cmp -s bor1.sha256 bor2.sha256; then
         #         echo >&2 "Reproducible build broken"; cat bor1.sha256; cat bor2.sha256; exit 1
         #       fi
+
+  integration-tests:
+    strategy:
+      matrix:
+        os: [ ubuntu-20.04 ] # list of os: https://github.com/actions/virtual-environments
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v3
+      - run: |
+          git submodule update --init --recursive --force
+          git fetch --no-tags --prune --depth=1 origin +refs/heads/master:refs/remotes/origin/master
+
+      - uses: actions/setup-go@v3
+        with:
+          go-version: 1.19.x
+
+      - name: Install dependencies on Linux
+        if: runner.os == 'Linux'
+        run: sudo apt update && sudo apt install build-essential
+
+      - uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/Library/Caches/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: ${{ runner.os }}-go-
+
+      - name: test-integration
+        run: make test-integration
