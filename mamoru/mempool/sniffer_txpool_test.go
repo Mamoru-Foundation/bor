@@ -253,11 +253,14 @@ func TestMempoolSniffer(t *testing.T) {
 
 	retries := backoff.WithMaxRetries(backoff.NewConstantBackOff(500*time.Millisecond), 20)
 
+	receivedTx := make([]*types.Transaction, 0)
+	receivedBlock := make([]*types.Block, 0)
+
 	err := backoff.Retry(func() error {
-		if err := validateEvents(newTxsEvent, 2); err != nil {
+		if err := validateEvents(newTxsEvent, 2, receivedTx); err != nil {
 			return errors.New(fmt.Sprintf("newTxsEvent original event firing failed: %v", err))
 		}
-		if err := validateChainHeadEvents(newChainHeadEvent, n); err != nil {
+		if err := validateChainHeadEvents(newChainHeadEvent, n, receivedBlock); err != nil {
 			return errors.New(fmt.Sprintf("newChainHeadEvent original event firing failed: %v", err))
 		}
 		pending, queued := pool.Stats()
@@ -309,19 +312,17 @@ func TestMempoolSniffer(t *testing.T) {
 
 // validateEvents checks that the correct number of transaction addition events
 // were fired on the pool's event feed.
-func validateEvents(events chan core.NewTxsEvent, count int) error {
-	var received []*types.Transaction
-
-	for len(received) < count {
+func validateEvents(events chan core.NewTxsEvent, count int, receivedTx []*types.Transaction) error {
+	for len(receivedTx) < count {
 		select {
 		case ev := <-events:
-			received = append(received, ev.Txs...)
+			receivedTx = append(receivedTx, ev.Txs...)
 		case <-time.After(time.Second):
-			return fmt.Errorf("event #%d not fired", len(received))
+			return fmt.Errorf("event #%d not fired", len(receivedTx))
 		}
 	}
-	if len(received) > count {
-		return fmt.Errorf("more than %d events fired: %v", count, received[count:])
+	if len(receivedTx) > count {
+		return fmt.Errorf("more than %d events fired: %v", count, receivedTx[count:])
 	}
 	select {
 	case ev := <-events:
@@ -335,19 +336,17 @@ func validateEvents(events chan core.NewTxsEvent, count int) error {
 	return nil
 }
 
-func validateChainHeadEvents(events chan core.ChainHeadEvent, count int) error {
-	var received []*types.Block
-
-	for len(received) < count {
+func validateChainHeadEvents(events chan core.ChainHeadEvent, count int, receivedBlock []*types.Block) error {
+	for len(receivedBlock) < count {
 		select {
 		case ev := <-events:
-			received = append(received, ev.Block)
+			receivedBlock = append(receivedBlock, ev.Block)
 		case <-time.After(time.Second):
-			return fmt.Errorf("event #%d not fired", len(received))
+			return fmt.Errorf("event #%d not fired", len(receivedBlock))
 		}
 	}
-	if len(received) > count {
-		return fmt.Errorf("more than %d events fired: %v", count, received[count:])
+	if len(receivedBlock) > count {
+		return fmt.Errorf("more than %d events fired: %v", count, receivedBlock[count:])
 	}
 	select {
 	case ev := <-events:
