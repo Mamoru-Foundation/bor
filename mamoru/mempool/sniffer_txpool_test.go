@@ -3,6 +3,7 @@ package mempool
 import (
 	"context"
 	"crypto/ecdsa"
+	"errors"
 	"fmt"
 	"math/big"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cenkalti/backoff/v4"
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/mamoru"
 
@@ -247,28 +249,60 @@ func TestMempoolSniffer(t *testing.T) {
 	_, _ = bChain.InsertChain(blocks)
 	pool.AddRemotesSync(append(txsPending, txsQueued...))
 
-	time.Sleep(5 * time.Second)
-	cancelCtx()
+	defer cancelCtx()
 
-	if err := validateEvents(newTxsEvent, 2); err != nil {
-		t.Errorf("newTxsEvent original event firing failed: %v", err)
-	}
-	if err := validateChainHeadEvents(newChainHeadEvent, n); err != nil {
-		t.Errorf("newChainHeadEvent original event firing failed: %v", err)
-	}
-	pending, queued := pool.Stats()
-	assert.Equal(t, txsPending.Len(), pending)
-	assert.Equal(t, txsQueued.Len(), queued)
+	retries := backoff.WithMaxRetries(backoff.NewConstantBackOff(500*time.Millisecond), 20)
 
-	assert.Equal(t, n, len(blocks))
-	assert.Equal(t, txsPending.Len(), feeder.Txs().Len(), "pending transaction len must be equals feeder transaction len")
-	assert.Equal(t, txsPending.Len(), feeder.Receipts().Len(), "receipts len must be equal")
-	assert.Equal(t, txsPending.Len(), len(feeder.CallFrames()), "CallFrames len must be equal")
+	err := backoff.Retry(func() error {
+		if err := validateEvents(newTxsEvent, 2); err != nil {
+			return errors.New(fmt.Sprintf("newTxsEvent original event firing failed: %v", err))
+		}
+		if err := validateChainHeadEvents(newChainHeadEvent, n); err != nil {
+			return errors.New(fmt.Sprintf("newChainHeadEvent original event firing failed: %v", err))
+		}
+		pending, queued := pool.Stats()
 
-	for _, call := range feeder.CallFrames() {
-		assert.Empty(t, call.Error, "error must be empty")
-		assert.NotNil(t, call.Type, "type must be not nil")
-		assert.Equal(t, addrToHex(address), call.From, "address must be equal")
+		if txsPending.Len() != pending {
+			return errors.New(fmt.Sprintf("error: txsPending.Len() = %d, expected %d", txsPending.Len(), pending))
+		}
+
+		if txsQueued.Len() != queued {
+			return errors.New(fmt.Sprintf("error: txsQueued.Len() = %d, expected %d", txsQueued.Len(), queued))
+		}
+
+		if n != len(blocks) {
+			return errors.New(fmt.Sprintf("error: expected %d blocks, got %d", n, len(blocks)))
+		}
+
+		if txsPending.Len() != feeder.Txs().Len() {
+			return errors.New("error: pending transaction len must be equal to feeder transaction len")
+		}
+
+		if txsPending.Len() != feeder.Receipts().Len() {
+			return errors.New("error: receipts len must be equal")
+		}
+
+		if txsPending.Len() != len(feeder.CallFrames()) {
+			return errors.New("error: CallFrames len must be equal")
+		}
+
+		for _, call := range feeder.CallFrames() {
+			if call.Error != "" {
+				return errors.New("error: error must be empty")
+			}
+			if call.Type == "" {
+				return errors.New("error: type must not be nil")
+			}
+			if call.From != addrToHex(address) {
+				return errors.New("error: address must be equal")
+			}
+		}
+
+		return nil
+	}, retries)
+
+	if err != nil {
+		t.Error(err)
 	}
 
 }
