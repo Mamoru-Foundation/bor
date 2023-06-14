@@ -363,3 +363,148 @@ func validateChainHeadEvents(events chan core.ChainHeadEvent, count int, receive
 func addrToHex(a common.Address) string {
 	return strings.ToLower(a.Hex())
 }
+
+func TestMempoolSniffer2(t *testing.T) {
+	_ = os.Setenv("MAMORU_SNIFFER_ENABLE", "true")
+
+	defer func() {
+		_ = os.Unsetenv("MAMORU_SNIFFER_ENABLE")
+	}()
+	actual := os.Getenv("MAMORU_SNIFFER_ENABLE")
+	assert.Equal(t, "true", actual)
+
+	// mock connect to sniffer
+	mamoru.SnifferConnectFunc = func() (*mamoru_sniffer.Sniffer, error) { return nil, nil }
+
+	var (
+		key, _     = crypto.GenerateKey()
+		address    = crypto.PubkeyToAddress(key.PublicKey)
+		statedb, _ = state.New(common.Hash{}, state.NewDatabase(rawdb.NewMemoryDatabase()), nil)
+		engine     = ethash.NewFaker()
+	)
+
+	statedb.SetBalance(address, new(big.Int).SetUint64(params.Ether))
+
+	bChain := &testBlockChain{gasLimit: 100000, statedb: statedb, chainHeadFeed: new(event.Feed), chainEventFeed: new(event.Feed), chainSideEventFeed: new(event.Feed), engine: engine}
+	db := rawdb.NewMemoryDatabase()
+	chainConfig := params.TestChainConfig
+
+	var gspec = core.Genesis{
+		Config: chainConfig,
+		Alloc:  core.GenesisAlloc{testBankAddress: {Balance: testBankFunds}},
+	}
+	genesis := gspec.MustCommit(db)
+
+	pool := core.NewTxPool(testTxPoolConfig, chainConfig, bChain)
+	defer pool.Stop()
+
+	txsPending := types.Transactions{}
+	txsQueued := types.Transactions{}
+	for j := 0; j < 10; j++ {
+		//create pending transactions
+		txsPending = append(txsPending, transaction(uint64(j), 1000000, key))
+	}
+	for j := 0; j < 10; j++ {
+		//create queued transactions (nonce > current nonce)
+		txsQueued = append(txsQueued, transaction(uint64(j+100), 1000000, key))
+	}
+	n := 2
+	blocks, _ := core.GenerateChain(chainConfig, genesis, engine, db, n, func(i int, gen *core.BlockGen) {
+		gen.SetCoinbase(testBankAddress)
+	})
+
+	ctx, cancelCtx := context.WithCancel(context.Background())
+	feeder := &testFeeder{}
+	memSniffer := NewSniffer(ctx, pool, bChain, params.TestChainConfig, feeder)
+
+	memSniffer.sniffer.SetDownloader(&statusProgressMock{})
+
+	newTxsEvent := make(chan core.NewTxsEvent, 20)
+	sub := memSniffer.txPool.SubscribeNewTxsEvent(newTxsEvent)
+	defer sub.Unsubscribe()
+
+	newChainHeadEvent := make(chan core.ChainHeadEvent, 10)
+	sub2 := memSniffer.SubscribeChainHeadEvent(newChainHeadEvent)
+	defer sub2.Unsubscribe()
+
+	go memSniffer.SnifferLoop()
+	_, _ = bChain.InsertChain(blocks)
+	pool.AddRemotesSync(append(txsPending, txsQueued...))
+
+	time.Sleep(150 * time.Millisecond)
+	defer cancelCtx()
+
+	if err := validateEvents2(newTxsEvent, 10); err != nil {
+		t.Errorf("newTxsEvent original event firing failed: %v", err)
+	}
+	if err := validateChainHeadEvents2(newChainHeadEvent, n); err != nil {
+		t.Errorf("newChainHeadEvent original event firing failed: %v", err)
+	}
+	pending, queued := pool.Stats()
+	assert.Equal(t, txsPending.Len(), pending)
+	assert.Equal(t, txsQueued.Len(), queued)
+
+	assert.Equal(t, n, len(blocks))
+	assert.Equal(t, txsPending.Len(), feeder.Txs().Len(), "pending transaction len must be equals feeder transaction len")
+	assert.Equal(t, txsPending.Len(), feeder.Receipts().Len(), "receipts len must be equal")
+	assert.Equal(t, txsPending.Len(), len(feeder.CallFrames()), "CallFrames len must be equal")
+
+	for _, call := range feeder.CallFrames() {
+		assert.Empty(t, call.Error, "error must be empty")
+		assert.NotNil(t, call.Type, "type must be not nil")
+		assert.Equal(t, addrToHex(address), call.From, "address must be equal")
+	}
+
+}
+
+func validateEvents2(events chan core.NewTxsEvent, count int) error {
+	var received []*types.Transaction
+
+	for len(received) < count {
+		select {
+		case ev := <-events:
+			received = append(received, ev.Txs...)
+		case <-time.After(time.Second):
+			return fmt.Errorf("event #%d not fired", len(received))
+		}
+	}
+	if len(received) > count {
+		return fmt.Errorf("more than %d events fired: %v", count, received[count:])
+	}
+	select {
+	case ev := <-events:
+		return fmt.Errorf("more than %d events fired: %v", count, ev.Txs)
+
+	case <-time.After(50 * time.Millisecond):
+		// This branch should be "default", but it's a data race between goroutines,
+		// reading the event channel and pushing into it, so better wait a bit ensuring
+		// really nothing gets injected.
+	}
+	return nil
+}
+
+func validateChainHeadEvents2(events chan core.ChainHeadEvent, count int) error {
+	var received []*types.Block
+
+	for len(received) < count {
+		select {
+		case ev := <-events:
+			received = append(received, ev.Block)
+		case <-time.After(time.Second):
+			return fmt.Errorf("event #%d not fired", len(received))
+		}
+	}
+	if len(received) > count {
+		return fmt.Errorf("more than %d events fired: %v", count, received[count:])
+	}
+	select {
+	case ev := <-events:
+		return fmt.Errorf("more than %d events fired: %v", count, ev.Block)
+
+	case <-time.After(50 * time.Millisecond):
+		// This branch should be "default", but it's a data race between goroutines,
+		// reading the event channel and pushing into it, so better wait a bit ensuring
+		// really nothing gets injected.
+	}
+	return nil
+}
