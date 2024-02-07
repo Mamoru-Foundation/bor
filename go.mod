@@ -277,3 +277,5 @@ replace github.com/ethereum/go-ethereum => github.com/maticnetwork/bor v1.0.6
 replace github.com/Masterminds/goutils => github.com/Masterminds/goutils v1.1.1
 
 replace go.mongodb.org/mongo-driver => go.mongodb.org/mongo-driver v1.5.1
+
+require github.com/Mamoru-Foundation/mamoru-sniffer-go v0.11.3
