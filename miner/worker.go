@@ -889,8 +889,16 @@ func (w *worker) commitTransaction(env *environment, tx *types.Transaction, inte
 
 	// nolint : staticcheck
 	interruptCtx = vm.SetCurrentTxOnContext(interruptCtx, tx.Hash())
-
-	receipt, err := core.ApplyTransaction(w.chainConfig, w.chain, &env.coinbase, env.gasPool, env.state, env.header, tx, &env.header.GasUsed, *w.chain.GetVMConfig(), interruptCtx)
+	//////////////////// MAMORU ////////////////////
+	// Clear Mamoru tracer
+	vmConfig := vm.Config{
+		Tracer:                  nil,
+		NoBaseFee:               w.chain.GetVMConfig().NoBaseFee,
+		EnablePreimageRecording: w.chain.GetVMConfig().EnablePreimageRecording,
+		ExtraEips:               w.chain.GetVMConfig().ExtraEips,
+	}
+	//////////////////// MAMORU ////////////////////
+	receipt, err := core.ApplyTransaction(w.chainConfig, w.chain, &env.coinbase, env.gasPool, env.state, env.header, tx, &env.header.GasUsed, vmConfig, interruptCtx)
 	if err != nil {
 		env.state.RevertToSnapshot(snap)
 		env.gasPool.SetGas(gp)
