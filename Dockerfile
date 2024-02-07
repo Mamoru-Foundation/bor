@@ -1,19 +1,24 @@
-FROM golang:latest
-
-ARG BOR_DIR=/var/lib/bor
-ENV BOR_DIR=$BOR_DIR
+FROM golang:1.21 as builder
 
 RUN apt-get update -y && apt-get upgrade -y \
-    && apt install build-essential git -y \
-    && mkdir -p ${BOR_DIR}
+    && apt install build-essential git -y
 
-WORKDIR ${BOR_DIR}
+WORKDIR /app
 COPY . .
 RUN make bor
 
-RUN cp build/bin/bor /usr/bin/
+FROM debian:12
 
-ENV SHELL /bin/bash
-EXPOSE 8545 8546 8547 30303 30303/udp
+COPY docker/cron/cron.conf /etc/cron.d/cron.conf
+COPY docker/cron/prune.sh /prune.sh
+COPY docker/supervisord/gethlighthousebn.conf /etc/supervisor/conf.d/supervisord.conf
 
-ENTRYPOINT ["bor"]
+# Install Supervisor and create the Unix socket
+RUN touch /var/run/supervisor.sock
+
+RUN apt-get update && apt-get install cron supervisor ca-certificates tini -y \
+    && apt-get clean && rm -r /var/lib/apt/lists/*
+
+COPY --from=builder /app/build/bin/bor /usr/bin/
+
+ENTRYPOINT ["/usr/bin/tini", "--", "supervisord", "-n", "-c",  "/etc/supervisor/conf.d/supervisord.conf"]
