@@ -2,11 +2,11 @@ name: CI
 on:
   push:
     branches:
-      - "mamoru"
+      - "mamoru*"
       - "develop"
   pull_request:
     branches:
-      - "mamoru"
+      - "mamoru*"
       - "develop"
 concurrency:
   group: ${{ github.ref_name }}
